@@ -316,14 +316,45 @@ C: MAIL FROM:<noreply@example.com>
 S: 250 2.0.0 OK
 ~~~
 
-The MSA determines the submission context based on the credential
-type used during SMTP AUTH. Machine credentials are distinguished
-from human credentials through one of the following mechanisms:
+## Submission Context Classification {#context-classification}
+
+The submission context (Human or Programmatic) is determined by the
+credential used during SMTP AUTH, not by the submission path or
+protocol. The credential determines the classification:
+
+- An account authenticated with a human user's credentials (password,
+  OAuth token issued via user authorization flow, passkey) MUST be
+  classified as a Human Submission Context regardless of whether the
+  submission occurs through an interactive MUA, a webmail interface,
+  or an API.
+
+- An account authenticated with machine credentials MUST be classified
+  as a Programmatic Submission Context. Machine credentials are
+  distinct from human credentials and are issued to designated machine
+  identities, not to human user accounts.
+
+This design ensures that a compromised human account cannot bypass
+per-send verification by submitting through an API or automated
+pipeline. The stolen credential is still a human credential, and the
+MSA MUST require SENDAUTH verification for every message submitted
+with it.
+
+Machine credentials are distinguished from human credentials through
+one or more of the following mechanisms:
 
 - A dedicated authentication mechanism identifier (e.g., AUTH
   MACHINEAUTH)
-- OAuth scope metadata indicating a machine client
+- OAuth client credentials grant (RFC 6749 Section 4.4), as distinct
+  from the authorization code or device authorization grants used for
+  human users
 - Administrative designation of specific accounts as service accounts
+  with separately issued credentials (e.g., API keys, service account
+  keys, client certificates)
+
+An MSA MUST NOT allow a human-designated account to authenticate
+using machine credential mechanisms. An MSA MUST NOT reclassify a
+human account as a service account without explicit administrative
+action by the domain operator.
 
 The MSA records the submission context (human-verified or
 machine-authenticated) in the message's authentication results.
