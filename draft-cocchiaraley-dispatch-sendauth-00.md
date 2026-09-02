@@ -93,11 +93,26 @@ credentialed user. It does not verify that the person composing and
 sending a given message within that session is the authorized account
 holder.
 
-This one-time session authentication creates a vulnerability window:
-any party with access to the authenticated session — whether through
-physical access to an unlocked device, a shared workstation, or an
-active session left unattended — can send messages as if they were the
-account holder.
+Modern MUAs (webmail interfaces, desktop email clients, mobile apps)
+manage SMTP connections, authentication, and credential storage
+transparently. Session credentials — OAuth tokens, stored passwords,
+OS keychain entries — are available to the MUA without per-action
+user interaction. An unauthorized party with physical access to an
+unlocked device can compose and send a message through the MUA's
+graphical interface; the MUA will open a fresh SMTP connection,
+authenticate using the stored credentials, and submit the message
+on the attacker's behalf — all without any identity challenge.
+
+This threat operates at the MUA layer, not the SMTP connection
+layer. Connection-level mitigations — such as shortening SMTP
+connection lifetimes or requiring re-authentication per connection —
+do not address this gap, because the MUA will establish a new
+authenticated connection transparently each time the user (or an
+unauthorized party) clicks Send.
+
+The gap is between "the MUA has credentials to authenticate" and
+"the person pressing Send is the person those credentials belong
+to."
 
 Existing email authentication mechanisms (SPF {{RFC7208}}, DKIM
 {{RFC6376}}, DMARC {{RFC7489}}) operate at the domain level and do
