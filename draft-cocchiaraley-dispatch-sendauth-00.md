@@ -241,6 +241,60 @@ reject the MAIL FROM command with a 530 reply code:
 S: 530 5.7.1 Sender identity verification required
 ~~~
 
+## Protocol Flow — Level 2 Message Authorization
+
+When the MSA advertises Level 2 support and the MUA supports it,
+the protocol includes a second attestation phase after the message
+has been transmitted. This binds the user's approval to the specific
+message content and recipients:
+
+~~~ smtp
+C: EHLO client.example.com
+S: 250-submission.example.com Hello client.example.com
+S: 250-AUTH PLAIN LOGIN
+S: 250-SENDAUTH FIDO2 PIN MACHINEAUTH LEVEL2
+S: 250 OK
+
+C: AUTH PLAIN dXNlckBleGFtcGxlLmNvbQBwYXNzd29yZA==
+S: 235 2.7.0 Authentication successful
+
+C: MAIL FROM:<user@example.com>
+S: 334 SENDAUTH challenge [base64-encoded-challenge-data]
+
+C: SENDAUTH FIDO2 [base64-encoded-signed-attestation]
+S: 250 2.0.0 Sender verified (Level 1)
+
+C: RCPT TO:<recipient@example.org>
+S: 250 2.1.5 OK
+
+C: DATA
+S: 354 Start mail input
+C: From: User <user@example.com>
+C: To: Recipient <recipient@example.org>
+C: Subject: Example message
+C: Date: Tue, 01 Sep 2026 10:00:00 -0400
+C:
+C: Message body.
+C: .
+S: 334 SENDAUTH-AUTHORIZE [base64-encoded-digest-challenge]
+
+C: SENDAUTH-AUTHORIZE [base64-encoded-signed-authorization]
+S: 250 2.0.0 Message authorized and accepted
+~~~
+
+The MSA computes a canonical digest over the authorization identity,
+the complete envelope-recipient set, and the message content. The
+MUA independently computes the same digest, presents it to the user
+for approval via a second authenticator challenge, and transmits the
+signed authorization. The MSA compares the digest in the
+authorization against its own computation; if they match and the
+signature is valid, the message is accepted. If they do not match,
+the MSA MUST reject the message:
+
+~~~ smtp
+S: 550 5.7.1 Message authorization failed
+~~~
+
 ## Protocol Flow — Programmatic Submission
 
 When the MUA authenticates using machine credentials (API key, OAuth
@@ -280,25 +334,62 @@ The Sender Presence Attestation (SPA) is a signed assertion based on
 the WebAuthn AuthenticatorAssertionResponse structure
 {{W3C-WebAuthn}}, adapted for the SMTP submission context.
 
-The attestation binds the following elements:
+SENDAUTH defines two levels of attestation, reflecting the
+distinction between recent user verification and message
+authorization:
+
+### Level 1: Recent User Verification {#level-1}
+
+The Level 1 SPA confirms that the credential holder was present
+at send time. It binds the following elements:
 
 - The sender's registered credential (public key) associated with the
   email account
 - A server-generated challenge (nonce) provided in the SENDAUTH
   challenge
 - A timestamp indicating when the verification occurred
-- An action indicator confirming real-time user presence and consent
-  to send
+- An action indicator confirming real-time user presence
+
+Level 1 verification occurs at the MAIL FROM phase. It proves
+that a WebAuthn ceremony occurred but does not bind the
+attestation to the specific message content or recipients.
+
+### Level 2: Message Authorization {#level-2}
+
+The Level 2 SPA confirms that the credential holder approved the
+specific message being submitted. In addition to the Level 1
+elements, it binds:
+
+- The authorization identity of the sender (per {{RFC4954}},
+  Section 5)
+- The complete SMTP envelope-recipient set (all RCPT TO addresses)
+- A canonical digest of the message content as submitted
+
+Level 2 verification requires a two-phase protocol flow. The
+initial WebAuthn ceremony occurs at MAIL FROM (Level 1). After
+the client has issued all RCPT TO commands and transmitted the
+message via DATA, the MUA computes a digest over the authorization
+identity, the envelope-recipient set, and the message content,
+and presents this digest to the user for approval via a second
+authenticator challenge. The resulting attestation is transmitted
+to the MSA, which compares the bound values against the completed
+transaction before final acceptance.
+
+Implementations MUST support Level 1. Support for Level 2 is
+RECOMMENDED. The MSA advertises supported levels in its EHLO
+response (e.g., SENDAUTH FIDO2 PIN MACHINEAUTH LEVEL2).
+
+### Attestation Encoding
 
 The attestation is encoded as a CBOR {{?RFC8949}} structure and
 transmitted base64-encoded within the SENDAUTH response.
 
 The full specification of the attestation format, including the CBOR
 schema and signature algorithm requirements, is to be developed in
-coordination with the FIDO Alliance {{FIDO2}}. The attestation MUST NOT convey
-biometric data; it conveys only a signed proof that a biometric or
-knowledge-factor check succeeded on the client device, consistent
-with the WebAuthn privacy model.
+coordination with the FIDO Alliance {{FIDO2}}. The attestation MUST
+NOT convey biometric data; it conveys only a signed proof that a
+biometric or knowledge-factor check succeeded on the client device,
+consistent with the WebAuthn privacy model.
 
 ## Fallback Authenticators
 
@@ -341,10 +432,15 @@ add this header to all messages it accepts for delivery.
 
 The field carries one of the following values:
 
-pass:
-: Per-send identity verification succeeded. The message was submitted
-  in a Human Submission Context, and a valid Sender Presence
-  Attestation was provided.
+verified:
+: Recent user verification succeeded (Level 1). The credential
+  holder was present at send time, but the attestation is not bound
+  to the specific message content or recipients.
+
+authorized:
+: Message authorization succeeded (Level 2). The credential holder
+  approved this specific message, including the authorization
+  identity, envelope-recipient set, and message content.
 
 machine:
 : The message was submitted in a Programmatic Submission Context
@@ -362,8 +458,12 @@ the domain's DKIM signature ({{RFC6376}}). Receiving MTAs SHOULD
 disregard this header if DKIM verification fails.
 
 Receiving MUAs MAY use the Sender-Verification-Result header to
-display a trust indicator to the recipient (e.g., a "Sender Verified"
-badge for messages with a value of "pass").
+display a trust indicator to the recipient. The indicator SHOULD
+distinguish between "verified" (the credential holder was present)
+and "authorized" (the credential holder approved this specific
+message). Implementations SHOULD NOT display an "authorized" or
+equivalent badge for messages that achieved only Level 1
+verification, as this would overstate what the ceremony proves.
 
 # Security Considerations
 
@@ -430,7 +530,8 @@ The layered authentication model is:
 | Layer | Mechanism | What It Verifies |
 |:------|:----------|:-----------------|
 | Session | SMTP AUTH (RFC 4954) | Credentials to open a session |
-| Send Action | SENDAUTH (this document) | Person pressing Send |
+| User Presence | SENDAUTH Level 1 (this document) | Credential holder was present at send time |
+| Message Approval | SENDAUTH Level 2 (this document) | Credential holder approved this specific message |
 | Domain | SPF / DKIM / DMARC | Authorized sending infrastructure |
 
 # IANA Considerations {#iana}
