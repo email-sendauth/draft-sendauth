@@ -4,7 +4,7 @@
 
 **Author:** Christopher Cocchiaraley (cc15000@gmail.com)
 
-**Status:** Individual submission, pre-Datatracker — seeking community feedback
+**Status:** Individual submission, pre-Datatracker — referred to [emailcore WG](https://datatracker.ietf.org/wg/emailcore/about/) by Dispatch, seeking community feedback
 
 ---
 
@@ -56,7 +56,8 @@ This draft is in the early feedback stage. Comments, questions, and suggestions 
 
 - **Open an issue** on this repository
 - **Email the author** at cc15000@gmail.com
-- **Discussion on the IETF Dispatch mailing list:** [dispatch@ietf.org](mailto:dispatch@ietf.org) ([archive](https://mailarchive.ietf.org/arch/browse/dispatch/))
+- **Discussion on the IETF emailcore mailing list:** [emailcore@ietf.org](mailto:emailcore@ietf.org) ([archive](https://mailarchive.ietf.org/arch/browse/emailcore/))
+- **Original Dispatch thread:** [archive](https://mailarchive.ietf.org/arch/msg/dispatch/ELzDGpNZYiQoOWe9oElCsBOBppY/)
 
 ## License
 
