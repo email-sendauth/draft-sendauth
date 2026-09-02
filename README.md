@@ -14,7 +14,7 @@ This repository contains an Internet-Draft proposing the **SENDAUTH extension** 
 
 ### The Problem
 
-Existing email authentication standards (SPF, DKIM, DMARC) verify **domains**, not **individuals**. SMTP AUTH ([RFC 4954](https://www.rfc-editor.org/rfc/rfc4954)) verifies identity at session login, but not at send time. This creates an exploitable gap: any party with access to an authenticated session can send messages as the account holder with no further identity challenge.
+Existing email authentication standards (SPF, DKIM, DMARC) verify **domains**, not **individuals**. SMTP AUTH ([RFC 4954](https://www.rfc-editor.org/rfc/rfc4954)) verifies identity at session login, but not at send time. Modern email clients manage connections, authentication, and credential storage transparently — an unauthorized party with physical access to an unlocked device can send messages through the client's interface, and the client will authenticate on their behalf without any identity challenge. The threat operates at the MUA (email client) layer, and connection-level mitigations do not address it.
 
 ### The Proposal
 
