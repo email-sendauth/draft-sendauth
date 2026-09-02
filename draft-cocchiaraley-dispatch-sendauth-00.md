@@ -136,7 +136,10 @@ attestation within a decentralized communication system — to email
 submission. The STIR framework was subsequently mandated by the
 TRACED Act {{TRACED-Act}}, establishing the precedent that
 standards-based identity verification can be imposed by legislation
-on a decentralized communication ecosystem.
+on a decentralized communication ecosystem. A similar standard-then-
+mandate approach succeeded for domain-level email authentication
+when DHS Binding Operational Directive 18-01 {{BOD-18-01}} required
+DMARC deployment across federal domains.
 
 ## Conventions and Definitions
 
@@ -292,7 +295,7 @@ transmitted base64-encoded within the SENDAUTH response.
 
 The full specification of the attestation format, including the CBOR
 schema and signature algorithm requirements, is to be developed in
-coordination with the FIDO Alliance. The attestation MUST NOT convey
+coordination with the FIDO Alliance {{FIDO2}}. The attestation MUST NOT convey
 biometric data; it conveys only a signed proof that a biometric or
 knowledge-factor check succeeded on the client device, consistent
 with the WebAuthn privacy model.
@@ -393,6 +396,11 @@ Additionally, the MSA SHOULD remove any pre-existing
 Sender-Verification-Result header on incoming submissions before
 adding its own, to prevent a submitting client from injecting a
 false value.
+
+In message forwarding and mailing list scenarios, the Authenticated
+Received Chain (ARC) protocol {{RFC8617}} may be used to preserve
+the original Sender-Verification-Result across intermediaries that
+re-sign the message.
 
 ## Privacy Considerations
 
