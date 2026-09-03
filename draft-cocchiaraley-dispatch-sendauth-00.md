@@ -27,6 +27,7 @@ author:
 
 normative:
   RFC2119:
+  RFC3030:
   RFC4954:
   RFC5321:
   RFC6409:
@@ -191,12 +192,14 @@ New commands:
 
 An MSA that supports SENDAUTH MUST advertise it in its EHLO response.
 An MSA that advertises SENDAUTH MUST enforce sender identity
-verification for all Human Submission Context sessions.
+verification for Human Submission Context sessions in accordance
+with its SENDAUTH Enforcement Policy ({{enforcement-policy}}).
 
-## Protocol Flow — Human Submission
+## Protocol Flow — Human Submission {#protocol-flow}
 
 The following illustrates the SMTP session flow when SENDAUTH is
-advertised and the session is a Human Submission Context:
+advertised and the session falls within the MSA's Enforcement
+Policy:
 
 ~~~ smtp
 C: EHLO client.example.com
@@ -212,9 +215,9 @@ C: MAIL FROM:<user@example.com>
 S: 250 2.0.0 OK
 
 C: SENDAUTH FIDO2
-S: 235 2.7.0 SENDAUTH challenge [base64-encoded-challenge-data]
+S: 334 [base64-encoded-challenge-data]
 
-C: SENDAUTH [base64-encoded-signed-attestation]
+C: [base64-encoded-signed-attestation]
 S: 235 2.7.0 Sender identity verified
 
 C: RCPT TO:<recipient@example.org>
@@ -234,10 +237,29 @@ S: 250 2.0.0 OK
 
 After MAIL FROM succeeds, the MUA initiates the SENDAUTH exchange.
 The MUA sends SENDAUTH with the chosen mechanism, and the MSA
-responds with a challenge containing a server-generated nonce. The
-MUA responds with a signed Sender Presence Attestation (SPA). If
-the attestation is valid, the MSA responds with 235 and the session
-proceeds to RCPT TO normally.
+responds with a 334 intermediate reply containing a server-generated
+challenge (nonce). The MUA responds with a base64-encoded Sender
+Presence Attestation (SPA). If the attestation is valid, the MSA
+responds with 235 (completion) and the session proceeds to RCPT TO
+normally.
+
+The SENDAUTH command and response use the following syntax:
+
+~~~ abnf
+sendauth-command  = "SENDAUTH" SP mechanism
+sendauth-response = base64-blob
+mechanism         = "FIDO2" / "PIN" / sendauth-mech-ext
+sendauth-mech-ext = 1*20(ALPHA / DIGIT)
+base64-blob       = 1*BASE64CHAR
+BASE64CHAR        = ALPHA / DIGIT / "+" / "/" / "="
+~~~
+
+The base64-encoded attestation data MAY exceed the 512-octet SMTP
+line limit ({{RFC5321, Section 4.5.3.1.4}}). Implementations MUST
+support SENDAUTH response lines up to 4096 octets. If the encoded
+attestation exceeds 4096 octets, the client MUST use the SMTP
+chunking mechanism defined in {{RFC3030}} or the MSA MUST advertise
+an extended line length via the SMTPUTF8 or similar extension.
 
 If the attestation is invalid, the MSA MUST reject with a 535
 reply code:
@@ -275,9 +297,9 @@ C: MAIL FROM:<user@example.com>
 S: 250 2.0.0 OK
 
 C: SENDAUTH FIDO2
-S: 235 2.7.0 SENDAUTH challenge [base64-encoded-challenge-data]
+S: 334 [base64-encoded-challenge-data]
 
-C: SENDAUTH [base64-encoded-signed-attestation]
+C: [base64-encoded-signed-attestation]
 S: 235 2.7.0 Sender verified (Level 1)
 
 C: RCPT TO:<recipient@example.org>
@@ -315,12 +337,32 @@ MUST reject the message in its DATA reply:
 S: 550 5.7.1 Message content does not match authorization
 ~~~
 
-Note: The canonical digest covers the message body and a defined
-set of originator headers. The precise canonicalization algorithm,
-including which headers are included, is to be specified in a
-future revision. Headers routinely added or modified by MUA
-software after composition (e.g., Message-ID, Date) require
-careful treatment to avoid nondeterministic verification failures.
+### Canonicalization {#canonicalization}
+
+The canonical digest binds the exact RFC 5322/MIME byte sequence
+that the MUA will transmit in DATA. The MUA MUST complete message
+serialization — including generating valid Date and Message-ID
+fields and normalizing line endings to CRLF — before computing the
+digest. The digest is computed over the frozen byte sequence before
+SMTP dot-stuffing ({{RFC5321, Section 4.5.2}}).
+
+The MSA MUST reverse SMTP transparency (remove dot-stuffing) and
+compute the digest over the received bytes before applying any
+RFC 6409 mutations or adding its own fields (Received, DKIM-Signature,
+ARC headers, Authentication-Results, Sender-Verification-Result).
+Fields added by MSA processing fall outside the authorization by
+processing order, not by enumeration.
+
+The envelope is bound separately: the exact MAIL FROM address
+followed by every accepted RCPT TO address in the order accepted,
+preserving relevant parameters and duplicates. Envelope recipients
+MUST NOT be inferred from message headers (To, Cc, Bcc).
+
+The precise digest algorithm and serialization format are to be
+specified in a future revision. DKIM relaxed canonicalization
+({{RFC6376, Section 3.4}}) is explicitly not suitable, as it
+deliberately tolerates modifications that would undermine the
+authorization binding.
 
 ## Protocol Flow — Programmatic Submission
 
@@ -362,9 +404,11 @@ protocol. The credential determines the classification:
 
 This design ensures that a compromised human account cannot bypass
 per-send verification by submitting through an API or automated
-pipeline. The stolen credential is still a human credential, and the
-MSA MUST require SENDAUTH verification for every message submitted
-with it.
+pipeline. The stolen credential is still a human credential, and
+falls within the scope of the MSA's SENDAUTH Enforcement Policy
+({{enforcement-policy}}). When that policy covers the session, the
+MSA MUST require SENDAUTH verification regardless of the submission
+path.
 
 Machine credentials are distinguished from human credentials through
 one or more of the following mechanisms:
@@ -385,6 +429,66 @@ action by the domain operator.
 
 The MSA records the submission context (human-verified or
 machine-authenticated) in the message's authentication results.
+
+## SENDAUTH Enforcement Policy {#enforcement-policy}
+
+An MSA that advertises SENDAUTH MUST maintain a SENDAUTH Enforcement
+Policy that determines which Human Submission Context sessions
+require per-send verification. The policy is a local matter
+configured by the domain operator.
+
+The default Enforcement Policy is full enforcement: all Human
+Submission Context sessions require SENDAUTH verification.
+Operators MAY configure a narrower policy that restricts enforcement
+to a subset of human sessions. The narrowing criteria are limited
+to information available at the SENDAUTH challenge point (after
+MAIL FROM, before RCPT TO):
+
+- Account-level designation: specific user accounts or groups of
+  accounts are flagged for mandatory SENDAUTH verification (e.g.,
+  all accounts in a department, all accounts with access to sensitive
+  systems).
+
+- Role-based designation: accounts assigned specific organizational
+  roles require SENDAUTH verification (e.g., finance officers,
+  medical records staff, executives, legal counsel).
+
+- Domain-wide enforcement: all human sessions on the domain require
+  SENDAUTH verification. This is the default.
+
+The policy MUST NOT depend on information that is unavailable at
+challenge time. In particular, the policy cannot condition on
+envelope recipients (not yet known), message content (not yet
+submitted), or subject matter (not yet visible to the MSA). These
+constraints follow from the protocol flow defined in
+{{protocol-flow}}.
+
+When the Enforcement Policy applies to a session, the MSA MUST
+require SENDAUTH verification. There is no per-message override or
+soft-fail mode within the scope of the policy. A session that falls
+outside the policy scope proceeds without SENDAUTH verification,
+and the operator accepts the residual risk for those sessions.
+
+### Deployment Considerations
+
+The policy mechanism is intended to support phased deployment.
+Operators in regulated environments — such as healthcare
+organizations subject to HIPAA transmission security requirements,
+financial institutions subject to anti-fraud controls, or
+government agencies handling Controlled Unclassified Information
+(CUI) — may deploy SENDAUTH for high-risk accounts before
+extending enforcement domain-wide.
+
+The phased approach allows operators to:
+
+- Evaluate operational impact on a subset of accounts before
+  broader rollout
+- Target accounts that handle sensitive communications first
+- Satisfy regulatory requirements for specific user populations
+  without imposing verification on all accounts simultaneously
+
+Once deployed, operators SHOULD plan to extend enforcement toward
+full coverage as operational experience permits.
 
 ## Sender Presence Attestation Format {#spa-format}
 
@@ -420,20 +524,25 @@ elements, it binds:
 
 - The authorization identity of the sender (per {{RFC4954}},
   Section 5)
-- The complete SMTP envelope-recipient set (all RCPT TO addresses)
-- A canonical digest of the message content as submitted
+- The complete SMTP envelope-recipient set (every accepted RCPT TO
+  address in the order accepted, with relevant parameters and
+  duplicates preserved)
+- A canonical digest of the message content as submitted (see
+  {{canonicalization}})
 
 Level 2 verification requires a two-phase protocol flow. The
 initial WebAuthn ceremony occurs after MAIL FROM (Level 1). After
 the client has issued all RCPT TO commands and before issuing DATA,
-the MUA computes a digest over the authorization identity, the
-envelope-recipient set, and the message content it is about to
-submit, and obtains a second authenticator assertion binding the
-credential holder's approval to that digest. The resulting
-attestation is transmitted to the MSA via SENDAUTH-AUTHORIZE. The
-MSA records the authorized digest, accepts the message via DATA,
-and compares the received content against the authorized digest
-before final acceptance.
+the MUA completes message serialization (including Date and
+Message-ID generation, CRLF normalization), freezes the byte
+sequence, and computes a digest over the authorization identity,
+the envelope-recipient set, and the frozen message bytes. The MUA
+obtains a second authenticator assertion binding the credential
+holder's approval to that digest. The resulting attestation is
+transmitted to the MSA via SENDAUTH-AUTHORIZE. The MSA records the
+authorized digest, accepts the message via DATA, reverses SMTP
+transparency, and compares the received bytes against the authorized
+digest before applying any MSA-added fields or RFC 6409 mutations.
 
 Implementations MUST support Level 1. Support for Level 2 is
 RECOMMENDED. The MSA advertises supported levels in its EHLO
@@ -512,10 +621,12 @@ machine:
   knowledge-factor challenge was performed.
 
 none:
-: The MSA does not support SENDAUTH, or the message was received via
-  relay (not submission). This value MUST NOT be added by an MSA that
-  advertises SENDAUTH; it is intended for messages transiting
-  infrastructure that predates SENDAUTH deployment.
+: The MSA does not support SENDAUTH, the session fell outside the
+  MSA's SENDAUTH Enforcement Policy, or the message was received via
+  relay (not submission). An MSA that advertises SENDAUTH MAY add
+  this value for sessions outside its policy scope. This value is
+  also used for messages transiting infrastructure that predates
+  SENDAUTH deployment.
 
 The MSA MUST sign the Sender-Verification-Result header as part of
 the domain's DKIM signature ({{RFC6376}}). Receiving MTAs SHOULD
@@ -540,14 +651,20 @@ The RECOMMENDED maximum nonce lifetime is 60 seconds.
 
 ## Downgrade Resistance
 
-An MSA that advertises SENDAUTH MUST NOT accept human-context
-submissions without a valid attestation. The extension does not
-define a "soft fail" mode for human submissions. A client that does
-not support SENDAUTH cannot submit messages through an MSA that
-requires it for human contexts.
+Within the scope of the SENDAUTH Enforcement Policy
+({{enforcement-policy}}), an MSA MUST NOT accept submissions
+without a valid attestation. There is no soft-fail mode within
+the policy scope. A client that does not support SENDAUTH cannot
+submit messages through an MSA whose policy covers that session.
 
-During the transition period, MSA operators MAY choose whether to
-advertise SENDAUTH. Once advertised, enforcement is mandatory.
+Sessions outside the policy scope proceed without SENDAUTH
+verification. The operator's policy boundary defines the extent
+of downgrade protection; messages outside that boundary receive
+no per-send assurance.
+
+MSA operators MAY choose whether to advertise SENDAUTH and how
+broadly to configure their Enforcement Policy. Once a policy
+covers a session, enforcement is mandatory.
 
 ## Header Integrity
 
