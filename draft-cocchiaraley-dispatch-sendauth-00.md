@@ -183,9 +183,11 @@ Parameters:
 : Supported attestation mechanisms, presented as a space-separated
   list. Initial values are FIDO2, PIN, and MACHINEAUTH.
 
-Verb:
-: No new SMTP verbs are defined. SENDAUTH modifies the behavior of
-  the existing MAIL FROM command.
+New commands:
+: SENDAUTH — transmits a Sender Presence Attestation in response to
+  a server challenge. SENDAUTH-AUTHORIZE — transmits a Level 2
+  message authorization binding identity, recipients, and content
+  digest.
 
 An MSA that supports SENDAUTH MUST advertise it in its EHLO response.
 An MSA that advertises SENDAUTH MUST enforce sender identity
@@ -207,10 +209,13 @@ C: AUTH PLAIN dXNlckBleGFtcGxlLmNvbQBwYXNzd29yZA==
 S: 235 2.7.0 Authentication successful
 
 C: MAIL FROM:<user@example.com>
-S: 334 SENDAUTH challenge [base64-encoded-challenge-data]
+S: 250 2.0.0 OK
 
-C: SENDAUTH [mechanism] [base64-encoded-signed-attestation]
-S: 250 2.0.0 Sender identity verified
+C: SENDAUTH FIDO2
+S: 235 2.7.0 SENDAUTH challenge [base64-encoded-challenge-data]
+
+C: SENDAUTH [base64-encoded-signed-attestation]
+S: 235 2.7.0 Sender identity verified
 
 C: RCPT TO:<recipient@example.org>
 S: 250 2.1.5 OK
@@ -227,26 +232,34 @@ C: .
 S: 250 2.0.0 OK
 ~~~
 
-Upon receiving the MAIL FROM command, the MSA issues a SENDAUTH
-challenge instead of immediately accepting the sender address. The
-challenge contains a server-generated nonce and the list of acceptable
-attestation mechanisms. The client responds with a signed Sender
-Presence Attestation (SPA) using one of the advertised mechanisms.
+After MAIL FROM succeeds, the MUA initiates the SENDAUTH exchange.
+The MUA sends SENDAUTH with the chosen mechanism, and the MSA
+responds with a challenge containing a server-generated nonce. The
+MUA responds with a signed Sender Presence Attestation (SPA). If
+the attestation is valid, the MSA responds with 235 and the session
+proceeds to RCPT TO normally.
 
-If the attestation is valid, the MSA responds with 250 and proceeds
-normally. If the attestation is invalid or absent, the MSA MUST
-reject the MAIL FROM command with a 530 reply code:
+If the attestation is invalid, the MSA MUST reject with a 535
+reply code:
 
 ~~~ smtp
-S: 530 5.7.1 Sender identity verification required
+S: 535 5.7.8 Sender identity verification failed
+~~~
+
+If a Human Submission Context session issues RCPT TO before
+completing a SENDAUTH exchange, the MSA MUST reject with:
+
+~~~ smtp
+S: 530 5.7.0 Sender identity verification required
 ~~~
 
 ## Protocol Flow — Level 2 Message Authorization
 
 When the MSA advertises Level 2 support and the MUA supports it,
-the protocol includes a second attestation phase after the message
-has been transmitted. This binds the user's approval to the specific
-message content and recipients:
+the protocol includes a message authorization phase after the
+recipient set is established but before the message is transmitted
+via DATA. This binds the user's approval to the specific message
+content and recipients:
 
 ~~~ smtp
 C: EHLO client.example.com
@@ -259,13 +272,19 @@ C: AUTH PLAIN dXNlckBleGFtcGxlLmNvbQBwYXNzd29yZA==
 S: 235 2.7.0 Authentication successful
 
 C: MAIL FROM:<user@example.com>
-S: 334 SENDAUTH challenge [base64-encoded-challenge-data]
+S: 250 2.0.0 OK
 
-C: SENDAUTH FIDO2 [base64-encoded-signed-attestation]
-S: 250 2.0.0 Sender verified (Level 1)
+C: SENDAUTH FIDO2
+S: 235 2.7.0 SENDAUTH challenge [base64-encoded-challenge-data]
+
+C: SENDAUTH [base64-encoded-signed-attestation]
+S: 235 2.7.0 Sender verified (Level 1)
 
 C: RCPT TO:<recipient@example.org>
 S: 250 2.1.5 OK
+
+C: SENDAUTH-AUTHORIZE [base64-encoded-signed-authorization]
+S: 235 2.7.0 Message authorization accepted
 
 C: DATA
 S: 354 Start mail input
@@ -276,24 +295,32 @@ C: Date: Tue, 01 Sep 2026 10:00:00 -0400
 C:
 C: Message body.
 C: .
-S: 334 SENDAUTH-AUTHORIZE [base64-encoded-digest-challenge]
-
-C: SENDAUTH-AUTHORIZE [base64-encoded-signed-authorization]
-S: 250 2.0.0 Message authorized and accepted
+S: 250 2.0.0 OK
 ~~~
 
-The MSA computes a canonical digest over the authorization identity,
-the complete envelope-recipient set, and the message content. The
-MUA independently computes the same digest, presents it to the user
-for approval via a second authenticator challenge, and transmits the
-signed authorization. The MSA compares the digest in the
-authorization against its own computation; if they match and the
-signature is valid, the message is accepted. If they do not match,
-the MSA MUST reject the message:
+The MUA computes a canonical digest over the authorization identity,
+the complete accepted envelope-recipient set, and the message content
+it is about to submit. The MUA obtains a signed authorization from
+the user's authenticator over that digest and transmits it via
+SENDAUTH-AUTHORIZE before issuing DATA. The MSA records the
+authorized digest and proceeds to accept the message via DATA.
+
+After receiving the complete message, the MSA independently computes
+the same canonical digest and compares it against the digest in the
+authorization. If they match and the signature is valid, the message
+is accepted with a normal 250 reply. If they do not match, the MSA
+MUST reject the message in its DATA reply:
 
 ~~~ smtp
-S: 550 5.7.1 Message authorization failed
+S: 550 5.7.1 Message content does not match authorization
 ~~~
+
+Note: The canonical digest covers the message body and a defined
+set of originator headers. The precise canonicalization algorithm,
+including which headers are included, is to be specified in a
+future revision. Headers routinely added or modified by MUA
+software after composition (e.g., Message-ID, Date) require
+careful treatment to avoid nondeterministic verification failures.
 
 ## Protocol Flow — Programmatic Submission
 
@@ -381,8 +408,8 @@ at send time. It binds the following elements:
 - A timestamp indicating when the verification occurred
 - An action indicator confirming real-time user presence
 
-Level 1 verification occurs at the MAIL FROM phase. It proves
-that a WebAuthn ceremony occurred but does not bind the
+Level 1 verification occurs after MAIL FROM, before RCPT TO. It
+proves that a WebAuthn ceremony occurred but does not bind the
 attestation to the specific message content or recipients.
 
 ### Level 2: Message Authorization {#level-2}
@@ -397,14 +424,16 @@ elements, it binds:
 - A canonical digest of the message content as submitted
 
 Level 2 verification requires a two-phase protocol flow. The
-initial WebAuthn ceremony occurs at MAIL FROM (Level 1). After
-the client has issued all RCPT TO commands and transmitted the
-message via DATA, the MUA computes a digest over the authorization
-identity, the envelope-recipient set, and the message content,
-and presents this digest to the user for approval via a second
-authenticator challenge. The resulting attestation is transmitted
-to the MSA, which compares the bound values against the completed
-transaction before final acceptance.
+initial WebAuthn ceremony occurs after MAIL FROM (Level 1). After
+the client has issued all RCPT TO commands and before issuing DATA,
+the MUA computes a digest over the authorization identity, the
+envelope-recipient set, and the message content it is about to
+submit, and obtains a second authenticator assertion binding the
+credential holder's approval to that digest. The resulting
+attestation is transmitted to the MSA via SENDAUTH-AUTHORIZE. The
+MSA records the authorized digest, accepts the message via DATA,
+and compares the received content against the authorized digest
+before final acceptance.
 
 Implementations MUST support Level 1. Support for Level 2 is
 RECOMMENDED. The MSA advertises supported levels in its EHLO
@@ -458,8 +487,12 @@ authentication:
 # Sender-Verification-Result Header Field {#svr-header}
 
 A new message header field, Sender-Verification-Result, is defined
-for messages that have undergone SENDAUTH processing. The MSA MUST
-add this header to all messages it accepts for delivery.
+for messages that have undergone SENDAUTH processing. The MSA MAY
+add this header to messages it accepts for delivery to signal the
+verification outcome to downstream systems. The primary value of
+SENDAUTH is at the originating domain (preventing unauthorized
+submissions); receiver-side consumption of this header requires a
+relay-safe trust model that is outside the scope of this document.
 
 The field carries one of the following values:
 
@@ -579,6 +612,15 @@ registry:
 | Keywords | SENDAUTH |
 | Description | Per-send sender identity verification |
 | Reference | [this document] |
+
+## SMTP Command Registration
+
+Registration of new SMTP commands defined by this extension:
+
+| Command | Description | Reference |
+|:--------|:------------|:----------|
+| SENDAUTH | Sender identity verification challenge-response | [this document] |
+| SENDAUTH-AUTHORIZE | Level 2 message authorization | [this document] |
 
 ## SENDAUTH Attestation Mechanisms Registry
 
