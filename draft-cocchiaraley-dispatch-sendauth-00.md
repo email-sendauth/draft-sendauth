@@ -246,7 +246,7 @@ The SENDAUTH command and response use the following syntax:
 
 ~~~ abnf
 sendauth-command  = "SENDAUTH" SP mechanism
-sendauth-response = base64-blob
+sendauth-response = base64-blob / "*"
 mechanism         = "FIDO2" / "PIN" / sendauth-mech-ext
 sendauth-mech-ext = 1*20(ALPHA / DIGIT)
 base64-blob       = 1*BASE64CHAR
@@ -257,15 +257,17 @@ The base64-encoded attestation data MAY exceed the 512-octet SMTP
 line limit ({{RFC5321, Section 4.5.3.1.4}}). Following the model
 established by {{RFC4954, Section 4}}, SENDAUTH challenge and
 response lines are treated independently of the normal SMTP line
-limit. Implementations MUST support SENDAUTH response lines up to
-4096 octets. If the client would need to send a response exceeding
-4096 octets, the client MUST abort the exchange by sending a single
-"*" (asterisk) as the response; the MSA MUST reject with a 501
-reply code. If the MSA receives a response that is not valid
-base64, the MSA MUST reject with a 501 reply code. The client MAY
-abort a SENDAUTH exchange at any time by sending a single "*"
-as its response to a 334 challenge; the MSA MUST reject with a
-501 reply code and the SMTP session remains in its prior state.
+limit. Both sides MUST support response lines up to the maximum
+encoded size produced by each supported mechanism. If the MSA
+receives a response line exceeding its buffer, it MUST reject
+with a 500 reply code.
+
+The client MAY cancel a SENDAUTH exchange at any time by sending
+a single "*" (asterisk) as its response to a 334 challenge; the
+MSA MUST reject with a 501 reply code and the SMTP session
+remains in its prior state. If the MSA receives a response that
+is not valid base64 or "*", the MSA MUST reject with a 501
+reply code.
 
 If the attestation is invalid, the MSA MUST reject with a 535
 reply code:
@@ -280,6 +282,22 @@ completing a SENDAUTH exchange, the MSA MUST reject with:
 ~~~ smtp
 S: 530 5.7.0 Sender identity verification required
 ~~~
+
+### SENDAUTH State Lifetime
+
+A successful SENDAUTH verification applies to a single mail
+transaction. The MSA MUST clear the verified state when any of the
+following occurs:
+
+- The mail transaction completes (after the final reply to DATA or
+  BDAT).
+- The client issues RSET.
+- The client issues a new MAIL FROM.
+- The connection is closed.
+
+A subsequent mail transaction within the same SMTP session MUST
+complete a new SENDAUTH exchange if the session falls within the
+scope of the MSA's Enforcement Policy.
 
 ## Protocol Flow — Level 2 Message Authorization
 
@@ -311,7 +329,10 @@ S: 235 2.7.0 Sender verified (Level 1)
 C: RCPT TO:<recipient@example.org>
 S: 250 2.1.5 OK
 
-C: SENDAUTH-AUTHORIZE [base64-encoded-signed-authorization]
+C: SENDAUTH-AUTHORIZE
+S: 334 [base64-encoded-authorization-challenge]
+
+C: [base64-encoded-signed-authorization]
 S: 235 2.7.0 Message authorization accepted
 
 C: DATA
@@ -328,10 +349,15 @@ S: 250 2.0.0 OK
 
 The MUA computes a canonical digest over the authorization identity,
 the complete accepted envelope-recipient set, and the message content
-it is about to submit. The MUA obtains a signed authorization from
-the user's authenticator over that digest and transmits it via
-SENDAUTH-AUTHORIZE before issuing DATA. The MSA records the
-authorized digest and proceeds to accept the message via DATA.
+it is about to submit. The MUA issues SENDAUTH-AUTHORIZE (with no
+arguments); the MSA responds with a 334 challenge. The MUA obtains
+a signed authorization from the user's authenticator over the digest
+and challenge, and transmits it as the response. This 334 exchange
+follows the same carriage rules as Level 1: response lines are
+independent of the normal SMTP line limit, cancellation via "*"
+produces a 501 reply, and invalid base64 is rejected with 501. The
+MSA records the authorized digest and proceeds to accept the message
+via DATA.
 
 After receiving the complete message, the MSA independently computes
 the same canonical digest and compares it against the digest in the
