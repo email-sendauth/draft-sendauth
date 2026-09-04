@@ -257,10 +257,10 @@ The base64-encoded attestation data MAY exceed the 512-octet SMTP
 line limit ({{RFC5321, Section 4.5.3.1.4}}). Following the model
 established by {{RFC4954, Section 4}}, SENDAUTH challenge and
 response lines are treated independently of the normal SMTP line
-limit. Both sides MUST support response lines up to the maximum
-encoded size produced by each supported mechanism. If the MSA
-receives a response line exceeding its buffer, it MUST reject
-with a 500 reply code.
+limit. Both sides MUST support challenge and response lines up
+to the maximum encoded size produced by each supported mechanism.
+If the MSA receives a response line exceeding its buffer, it MUST
+reject with a 500 reply code.
 
 The client MAY cancel a SENDAUTH exchange at any time by sending
 a single "*" (asterisk) as its response to a 334 challenge; the
@@ -286,8 +286,8 @@ S: 530 5.7.0 Sender identity verification required
 ### SENDAUTH State Lifetime
 
 A successful SENDAUTH verification applies to a single mail
-transaction. The MSA MUST clear the verified state when any of the
-following occurs:
+transaction. The MSA MUST clear all SENDAUTH and
+SENDAUTH-AUTHORIZE state when any of the following occurs:
 
 - The mail transaction completes (after the final reply to DATA or
   BDAT).
@@ -296,7 +296,8 @@ following occurs:
 - The connection is closed.
 
 A subsequent mail transaction within the same SMTP session MUST
-complete a new SENDAUTH exchange if the session falls within the
+complete a new SENDAUTH exchange, and a new SENDAUTH-AUTHORIZE
+exchange when Level 2 applies, if the session falls within the
 scope of the MSA's Enforcement Policy.
 
 ## Protocol Flow — Level 2 Message Authorization
